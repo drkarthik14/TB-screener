@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TB X-Ray Screener</title>
+
+  <!-- PWA Meta Tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TB Screener" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#1e3a5f" />
+  <meta name="description" content="AI-assisted TB X-Ray screening for PHC Nodal Officers" />
+
+  <!-- PWA Manifest (inline) -->
+  <script>
+    const manifest = {
+      name: "TB X-Ray Screener",
+      short_name: "TB Screener",
+      description: "AI-assisted TB X-Ray screening for PHC Nodal Officers - NTEP Tamil Nadu",
+      start_url: "./",
+      display: "standalone",
+      background_color: "#0f172a",
+      theme_color: "#1e3a5f",
+      orientation: "portrait",
+      icons: [
+        { src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='40' fill='%231e40af'/%3E%3Ctext x='96' y='130' font-size='110' text-anchor='middle'%3E🫁%3C/text%3E%3C/svg%3E", sizes: "192x192", type: "image/svg+xml" },
+        { src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='100' fill='%231e40af'/%3E%3Ctext x='256' y='360' font-size='300' text-anchor='middle'%3E🫁%3C/text%3E%3C/svg%3E", sizes: "512x512", type: "image/svg+xml" }
+      ]
+    };
+    const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+    const manifestURL = URL.createObjectURL(blob);
+    document.addEventListener('DOMContentLoaded', () => {
+      const link = document.createElement('link');
+      link.rel = 'manifest';
+      link.href = manifestURL;
+      document.head.appendChild(link);
+    });
+  </script>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React + Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body { margin: 0; padding: 0; background: #0f172a; overscroll-behavior: none; }
+    /* Safe area for iPhone notch */
+    .safe-top { padding-top: env(safe-area-inset-top, 0px); }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+    /* API key input */
+    .api-input { background: rgba(30,58,138,0.3); border: 1.5px solid rgba(59,130,246,0.4); color: white; border-radius: 12px; padding: 10px 14px; width: 100%; font-size: 14px; outline: none; }
+    .api-input:focus { border-color: rgba(96,165,250,0.8); }
+    .api-input::placeholder { color: rgba(148,163,184,0.6); }
+
+    /* Upload area */
+    .upload-zone { border: 2px dashed rgba(59,130,246,0.4); border-radius: 18px; background: rgba(15,23,42,0.6); cursor: pointer; transition: all 0.2s; }
+    .upload-zone:active { transform: scale(0.98); }
+    .upload-zone.dragover { border-color: #60a5fa; background: rgba(30,58,138,0.4); }
+
+    /* Result card */
+    .result-card { border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.3); margin-bottom: 20px; }
+
+    /* Spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes ping { 0%,100%{transform:scale(1);opacity:0.4} 50%{transform:scale(1.5);opacity:0} }
+    .spinner { animation: spin 0.8s linear infinite; }
+    .pinger { animation: ping 1.2s ease-in-out infinite; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.3); border-radius: 4px; }
+
+    /* Tag chips */
+    .chip { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 99px; border: 1px solid; margin: 2px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef, useCallback } = React;
+
+const SYSTEM_PROMPT = `You are an AI assistant supporting a qualified TB Nodal Officer at a Primary Health Centre (PHC) in Tamil Nadu, India. You are helping screen chest X-rays for tuberculosis as part of an active case-finding program targeting vulnerable populations.
+
+Your role is to provide structured radiological opinion similar to what a pulmonologist or radiologist would document, to support — NOT replace — the medical officer's clinical decision.
+
+Analyze the chest X-ray image provided and respond ONLY in the following strict JSON format (no markdown, no prose outside JSON):
+
+{
+  "overall_impression": "One of: STRONGLY SUGGESTIVE OF TB | POSSIBLY TB - CONFIRMATION REQUIRED | ABNORMAL - NON-TB AETIOLOGY | NORMAL / NO ACTIVE TB LESION | TECHNICALLY INADEQUATE",
+  "confidence": "High / Moderate / Low",
+  "radiological_findings": ["Finding 1 (location, character, distribution)", "Finding 2"],
+  "tb_features_present": ["Upper lobe infiltrates", "Cavitation", etc. — empty array if none],
+  "alternative_diagnoses": ["Differentials if non-TB" — empty array if TB primary],
+  "action_plan": {
+    "primary_recommendation": "START ATT after clinical correlation | SEND FOR CBNAAT | REFER TO DTO / SPECIALIST | ROUTINE FOLLOW-UP | REPEAT X-RAY",
+    "steps": ["Step 1", "Step 2", "Step 3"],
+    "urgency": "Immediate / Within 48 hours / Within 1 week / Routine"
+  },
+  "nikshay_eligibility": true or false,
+  "additional_notes": "Caveats, image quality issues, or special observations."
+}
+
+Be conservative. When in doubt between TB and non-TB, recommend CBNAAT. Consider PHC-level resources in Tamil Nadu. If image is not a chest X-ray or unreadable, use TECHNICALLY INADEQUATE.`;
+
+const IMPRESSION = {
+  "STRONGLY SUGGESTIVE OF TB":         { bg:"#fef2f2", border:"#fca5a5", icon:"🔴", textColor:"#991b1b", chipBg:"#fee2e2", chipText:"#991b1b" },
+  "POSSIBLY TB - CONFIRMATION REQUIRED":{ bg:"#fff7ed", border:"#fdba74", icon:"🟠", textColor:"#9a3412", chipBg:"#ffedd5", chipText:"#9a3412" },
+  "ABNORMAL - NON-TB AETIOLOGY":        { bg:"#fefce8", border:"#fde047", icon:"🟡", textColor:"#854d0e", chipBg:"#fef9c3", chipText:"#854d0e" },
+  "NORMAL / NO ACTIVE TB LESION":       { bg:"#f0fdf4", border:"#86efac", icon:"🟢", textColor:"#166534", chipBg:"#dcfce7", chipText:"#166534" },
+  "TECHNICALLY INADEQUATE":            { bg:"#f9fafb", border:"#d1d5db", icon:"⚪", textColor:"#374151", chipBg:"#f3f4f6", chipText:"#374151" },
+};
+
+const URGENCY = {
+  "Immediate":       { bg:"#fef2f2", text:"#991b1b", border:"#fca5a5" },
+  "Within 48 hours": { bg:"#fff7ed", text:"#9a3412", border:"#fdba74" },
+  "Within 1 week":   { bg:"#fefce8", text:"#854d0e", border:"#fde047" },
+  "Routine":         { bg:"#f0fdf4", text:"#166534", border:"#86efac" },
+};
+
+function ApiKeySetup({ onSave }) {
+  const [key, setKey] = useState('');
+  return (
+    <div style={{minHeight:'100vh', background:'linear-gradient(135deg,#0f172a,#1e3a5f,#0f172a)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'24px'}}>
+      <div style={{maxWidth:'360px', width:'100%', textAlign:'center'}}>
+        <div style={{fontSize:'64px', marginBottom:'16px'}}>🫁</div>
+        <h1 style={{color:'white', fontSize:'22px', fontWeight:'800', marginBottom:'6px'}}>TB X-Ray Screener</h1>
+        <p style={{color:'#93c5fd', fontSize:'13px', marginBottom:'32px'}}>AI-Assisted Decision Support · NTEP Tamil Nadu</p>
+
+        <div style={{background:'rgba(30,58,138,0.3)', border:'1px solid rgba(59,130,246,0.3)', borderRadius:'16px', padding:'24px', textAlign:'left'}}>
+          <p style={{color:'#93c5fd', fontSize:'13px', fontWeight:'600', marginBottom:'8px'}}>🔑 Enter your Anthropic API Key</p>
+          <input
+            className="api-input"
+            type="password"
+            placeholder="sk-ant-..."
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            onKeyDown={e => e.key==='Enter' && key.startsWith('sk-') && onSave(key)}
+          />
+          <p style={{color:'rgba(148,163,184,0.6)', fontSize:'11px', marginTop:'8px', lineHeight:'1.5'}}>
+            Your key is stored only on this device and never sent anywhere except Anthropic's servers.
+          </p>
+          <button
+            onClick={() => key.startsWith('sk-') && onSave(key)}
+            style={{marginTop:'16px', width:'100%', background: key.startsWith('sk-') ? '#2563eb':'#1e3a5f', color:'white', border:'none', borderRadius:'12px', padding:'12px', fontSize:'14px', fontWeight:'700', cursor: key.startsWith('sk-')?'pointer':'not-allowed', transition:'background 0.2s'}}
+          >
+            Start Screening →
+          </button>
+        </div>
+
+        <p style={{color:'rgba(148,163,184,0.4)', fontSize:'11px', marginTop:'20px'}}>
+          Get your free API key at console.anthropic.com
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ResultCard({ c }) {
+  const imp = c.result.overall_impression;
+  const cfg = IMPRESSION[imp] || IMPRESSION["TECHNICALLY INADEQUATE"];
+  const urg = c.result.action_plan?.urgency;
+  const urgCfg = URGENCY[urg] || { bg:'#f9fafb', text:'#374151', border:'#d1d5db' };
+
+  return (
+    <div className="result-card" style={{border:`2px solid ${cfg.border}`}}>
+      {/* Header */}
+      <div style={{background:cfg.bg, borderBottom:`2px solid ${cfg.border}`, padding:'14px 16px', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'8px'}}>
+        <div style={{display:'flex', alignItems:'center', gap:'10px', flex:1}}>
+          <span style={{fontSize:'28px'}}>{cfg.icon}</span>
+          <div>
+            <p style={{color:'#6b7280', fontSize:'10px', fontWeight:'700', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:'2px'}}>Case #{c.id}</p>
+            <p style={{color:cfg.textColor, fontWeight:'800', fontSize:'13px', lineHeight:'1.3'}}>{imp}</p>
+          </div>
+        </div>
+        <div style={{display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'4px', flexShrink:0}}>
+          <span className="chip" style={{background:cfg.chipBg, color:cfg.chipText, borderColor:cfg.border}}>
+            {c.result.confidence} confidence
+          </span>
+          {c.result.nikshay_eligibility && (
+            <span className="chip" style={{background:'#f3e8ff', color:'#6b21a8', borderColor:'#d8b4fe'}}>
+              📋 NIKSHAY
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* X-ray + findings */}
+      <div style={{display:'flex', flexDirection:'column', background:'white'}}>
+        {/* X-ray */}
+        <div style={{background:'#111', display:'flex', alignItems:'center', justifyContent:'center', padding:'10px', maxHeight:'220px', overflow:'hidden'}}>
+          <img src={c.imageUrl} alt="X-Ray" style={{maxHeight:'200px', maxWidth:'100%', objectFit:'contain', borderRadius:'6px', opacity:0.9}} />
+        </div>
+
+        {/* Findings */}
+        <div style={{padding:'14px 16px', display:'flex', flexDirection:'column', gap:'12px'}}>
+          <div>
+            <p style={{fontSize:'10px', fontWeight:'800', color:'#6b7280', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'6px'}}>📋 Radiological Findings</p>
+            {c.result.radiological_findings?.map((f,i) => (
+              <div key={i} style={{display:'flex', gap:'8px', marginBottom:'4px'}}>
+                <span style={{color:'#60a5fa', flexShrink:0, marginTop:'1px'}}>▸</span>
+                <span style={{color:'#374151', fontSize:'12px', lineHeight:'1.5'}}>{f}</span>
+              </div>
+            ))}
+          </div>
+
+          {c.result.tb_features_present?.length > 0 && (
+            <div>
+              <p style={{fontSize:'10px', fontWeight:'800', color:'#ef4444', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'6px'}}>🦠 TB Features</p>
+              <div style={{display:'flex', flexWrap:'wrap'}}>
+                {c.result.tb_features_present.map((f,i) => (
+                  <span key={i} className="chip" style={{background:'#fef2f2', color:'#991b1b', borderColor:'#fca5a5'}}>{f}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {c.result.alternative_diagnoses?.length > 0 && (
+            <div>
+              <p style={{fontSize:'10px', fontWeight:'800', color:'#b45309', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:'6px'}}>🔍 Differentials</p>
+              <div style={{display:'flex', flexWrap:'wrap'}}>
+                {c.result.alternative_diagnoses.map((d,i) => (
+                  <span key={i} className="chip" style={{background:'#fffbeb', color:'#92400e', borderColor:'#fcd34d'}}>{d}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Action Plan */}
+      <div style={{background:'#f8fafc', borderTop:'1.5px solid #e2e8f0', padding:'14px 16px'}}>
+        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'10px', flexWrap:'wrap', gap:'6px'}}>
+          <p style={{fontSize:'10px', fontWeight:'800', color:'#64748b', textTransform:'uppercase', letterSpacing:'0.07em'}}>⚡ Action Plan</p>
+          <span className="chip" style={{background:urgCfg.bg, color:urgCfg.text, borderColor:urgCfg.border}}>
+            ⏱ {urg}
+          </span>
+        </div>
+
+        <div style={{background:'white', border:'1.5px solid #e2e8f0', borderRadius:'10px', padding:'12px', marginBottom:'10px'}}>
+          <p style={{color:'#1e293b', fontWeight:'800', fontSize:'13px'}}>🎯 {c.result.action_plan?.primary_recommendation}</p>
+        </div>
+
+        <div style={{display:'flex', flexDirection:'column', gap:'6px'}}>
+          {c.result.action_plan?.steps?.map((step,i) => (
+            <div key={i} style={{display:'flex', gap:'8px', alignItems:'flex-start'}}>
+              <span style={{flexShrink:0, width:'20px', height:'20px', borderRadius:'50%', background:'#2563eb', color:'white', fontSize:'10px', fontWeight:'800', display:'flex', alignItems:'center', justifyContent:'center', marginTop:'1px'}}>{i+1}</span>
+              <span style={{color:'#475569', fontSize:'12px', lineHeight:'1.5'}}>{step}</span>
+            </div>
+          ))}
+        </div>
+
+        {c.result.additional_notes && (
+          <div style={{marginTop:'10px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:'8px', padding:'10px'}}>
+            <p style={{color:'#92400e', fontSize:'11px', lineHeight:'1.5'}}><strong>📝 Note: </strong>{c.result.additional_notes}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('tb_api_key') || '');
+  const [cases, setCases] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [showDisclaimer, setShowDisclaimer] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef();
+  const caseNum = useRef(0);
+
+  const saveKey = (key) => {
+    localStorage.setItem('tb_api_key', key);
+    setApiKey(key);
+  };
+
+  const processImage = useCallback(async (file) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setError('Please upload a valid image (JPG, PNG, etc.)');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(',')[1]);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const imageUrl = `data:${file.type};base64,${base64}`;
+
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
+              { type: 'text', text: 'Analyze this chest X-ray for TB screening and provide structured JSON opinion.' }
+            ]
+          }]
+        })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.error?.message || `API error ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      const raw = data.content?.map(b => b.text || '').join('') || '';
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('Could not parse AI response. Please retry.');
+      const result = JSON.parse(match[0]);
+      caseNum.current += 1;
+      setCases(prev => [{ result, imageUrl, id: caseNum.current }, ...prev]);
+    } catch(e) {
+      setError(e.message || 'Analysis failed. Please retry.');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiKey]);
+
+  if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
+
+  return (
+    <div style={{minHeight:'100vh', background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)'}}>
+      {/* Header */}
+      <div className="safe-top" style={{background:'rgba(15,23,42,0.85)', borderBottom:'1px solid rgba(59,130,246,0.25)', backdropFilter:'blur(12px)', position:'sticky', top:0, zIndex:50}}>
+        <div style={{maxWidth:'600px', margin:'0 auto', padding:'12px 16px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <div style={{width:'36px', height:'36px', borderRadius:'10px', background:'#2563eb', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px'}}>🫁</div>
+            <div>
+              <p style={{color:'white', fontWeight:'800', fontSize:'15px', margin:0}}>TB X-Ray Screener</p>
+              <p style={{color:'#60a5fa', fontSize:'10px', margin:0}}>AI Decision Support · PHC Tamil Nadu</p>
+            </div>
+          </div>
+          <div style={{display:'flex', alignItems:'center', gap:'6px', background:'rgba(30,58,138,0.5)', borderRadius:'99px', padding:'5px 12px'}}>
+            <span style={{width:'7px', height:'7px', borderRadius:'50%', background:'#4ade80', boxShadow:'0 0 6px #4ade80'}} />
+            <span style={{color:'#93c5fd', fontSize:'10px', fontWeight:'600'}}>NTEP Active</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Main */}
+      <div style={{maxWidth:'600px', margin:'0 auto', padding:'16px', paddingBottom:'32px'}}>
+
+        {/* Disclaimer */}
+        {showDisclaimer && (
+          <div style={{background:'rgba(120,53,15,0.3)', border:'1px solid rgba(217,119,6,0.4)', borderRadius:'14px', padding:'12px 14px', display:'flex', gap:'10px', marginBottom:'16px'}}>
+            <span style={{fontSize:'18px', flexShrink:0}}>⚠️</span>
+            <p style={{color:'#fde68a', fontSize:'11px', lineHeight:'1.6', margin:0, flex:1}}>
+              <strong>FOR QUALIFIED MEDICAL OFFICERS ONLY.</strong> AI opinion is decision-support, not standalone diagnosis. Correlate with clinical history. Does not replace CBNAAT, sputum AFB, or specialist review.
+            </p>
+            <button onClick={() => setShowDisclaimer(false)} style={{color:'#fbbf24', background:'none', border:'none', fontSize:'18px', cursor:'pointer', flexShrink:0, lineHeight:1}}>×</button>
+          </div>
+        )}
+
+        {/* Upload Zone */}
+        <div
+          className={`upload-zone ${dragOver ? 'dragover' : ''}`}
+          style={{marginBottom:'16px', opacity: loading ? 0.6 : 1, pointerEvents: loading ? 'none' : 'auto'}}
+          onClick={() => fileRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if(f) processImage(f); }}
+        >
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:'none'}}
+            onChange={e => e.target.files[0] && processImage(e.target.files[0])} />
+
+          {loading ? (
+            <div style={{padding:'48px 16px', display:'flex', flexDirection:'column', alignItems:'center', gap:'16px'}}>
+              <div style={{position:'relative', width:'52px', height:'52px'}}>
+                <div className="pinger" style={{position:'absolute', inset:0, borderRadius:'50%', border:'3px solid #93c5fd', opacity:0.5}} />
+                <div className="spinner" style={{position:'absolute', inset:'6px', borderRadius:'50%', border:'3px solid transparent', borderTopColor:'#3b82f6'}} />
+              </div>
+              <div style={{textAlign:'center'}}>
+                <p style={{color:'#93c5fd', fontWeight:'700', fontSize:'15px', margin:0}}>Analyzing X-Ray...</p>
+                <p style={{color:'#60a5fa', fontSize:'12px', margin:'4px 0 0'}}>AI is reviewing radiological patterns</p>
+              </div>
+            </div>
+          ) : (
+            <div style={{padding:'36px 16px', display:'flex', flexDirection:'column', alignItems:'center', gap:'10px'}}>
+              <div style={{width:'60px', height:'60px', borderRadius:'16px', background:'rgba(30,58,138,0.5)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'32px'}}>🩻</div>
+              <div style={{textAlign:'center'}}>
+                <p style={{color:'white', fontWeight:'700', fontSize:'16px', margin:0}}>Upload Chest X-Ray</p>
+                <p style={{color:'#60a5fa', fontSize:'12px', margin:'4px 0 0'}}>Tap to select · JPG / PNG · Camera supported</p>
+              </div>
+              <div style={{display:'flex', gap:'8px', marginTop:'4px'}}>
+                <button style={{background:'#2563eb', color:'white', border:'none', borderRadius:'10px', padding:'10px 20px', fontSize:'13px', fontWeight:'700', cursor:'pointer'}}>
+                  📁 Choose File
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}
+                  style={{background:'rgba(30,58,138,0.6)', color:'#93c5fd', border:'1px solid rgba(59,130,246,0.4)', borderRadius:'10px', padding:'10px 20px', fontSize:'13px', fontWeight:'700', cursor:'pointer'}}
+                >
+                  📷 Camera
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div style={{background:'rgba(127,29,29,0.4)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'10px', padding:'10px 14px', color:'#fca5a5', fontSize:'13px', marginBottom:'16px', display:'flex', gap:'8px', alignItems:'center'}}>
+            <span>❌</span> {error}
+            <button onClick={() => setError(null)} style={{background:'none', border:'none', color:'#fca5a5', cursor:'pointer', marginLeft:'auto', fontSize:'16px'}}>×</button>
+          </div>
+        )}
+
+        {/* Stats */}
+        {cases.length > 0 && (
+          <div style={{background:'rgba(30,58,138,0.25)', border:'1px solid rgba(59,130,246,0.2)', borderRadius:'12px', padding:'10px 14px', marginBottom:'16px', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
+            <span style={{color:'#93c5fd', fontSize:'13px'}}>
+              <strong style={{color:'white'}}>{cases.length}</strong> case{cases.length>1?'s':''} screened
+            </span>
+            <div style={{display:'flex', gap:'10px', fontSize:'13px'}}>
+              {[["STRONGLY SUGGESTIVE OF TB","🔴"],["POSSIBLY TB - CONFIRMATION REQUIRED","🟠"],["NORMAL / NO ACTIVE TB LESION","🟢"]].map(([k,icon]) => {
+                const n = cases.filter(c=>c.result.overall_impression===k).length;
+                return n ? <span key={k}>{icon} <span style={{color:'#cbd5e1'}}>{n}</span></span> : null;
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Results */}
+        {cases.map(c => <ResultCard key={c.id} c={c} />)}
+
+        {cases.length === 0 && !loading && (
+          <p style={{textAlign:'center', color:'rgba(96,165,250,0.4)', fontSize:'13px', padding:'24px 0'}}>
+            Upload your first X-ray to begin screening
+          </p>
+        )}
+
+        {/* Footer */}
+        <div className="safe-bottom" style={{textAlign:'center', color:'rgba(30,58,138,0.6)', fontSize:'10px', marginTop:'24px', paddingTop:'16px', borderTop:'1px solid rgba(30,58,138,0.3)'}}>
+          For use by qualified TB Nodal Officers · NTEP Tamil Nadu<br/>
+          <span style={{color:'rgba(100,116,139,0.4)', cursor:'pointer'}} onClick={() => { localStorage.removeItem('tb_api_key'); setApiKey(''); }}>
+            [ Change API Key ]
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<!-- Service Worker for PWA offline support -->
+<script>
+if ('serviceWorker' in navigator) {
+  const swCode = `
+    const CACHE = 'tb-screener-v1';
+    const ASSETS = ['./', './index.html'];
+    self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))));
+    self.addEventListener('fetch', e => {
+      if (e.request.url.includes('anthropic.com')) return;
+      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+    });
+  `;
+  const blob = new Blob([swCode], {type:'application/javascript'});
+  navigator.serviceWorker.register(URL.createObjectURL(blob));
+}
+</script>
+</body>
+</html>
